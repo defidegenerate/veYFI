@@ -1,5 +1,4 @@
 import pytest
-
 from brownie import ZERO_ADDRESS
 
 
@@ -10,7 +9,7 @@ def gov(accounts):
 
 @pytest.fixture
 def whale_amount():
-    yield 10 ** 22
+    yield 10**22
 
 
 @pytest.fixture
@@ -21,7 +20,7 @@ def whale(accounts, yfi, whale_amount):
 
 @pytest.fixture
 def shark_amount():
-    yield 10 ** 20
+    yield 10**20
 
 
 @pytest.fixture
@@ -32,7 +31,7 @@ def shark(accounts, yfi, shark_amount):
 
 @pytest.fixture
 def fish_amount():
-    yield 10 ** 18
+    yield 10**18
 
 
 @pytest.fixture
@@ -76,7 +75,7 @@ def ve_yfi(VotingEscrow, yfi, gov):
 
 @pytest.fixture
 def ve_yfi_rewards(VeYfiRewards, ve_yfi, yfi, gov):
-    ve_yfi_rewards = gov.deploy(VeYfiRewards, ve_yfi, yfi)
+    ve_yfi_rewards = gov.deploy(VeYfiRewards, ve_yfi, yfi, gov)
     ve_yfi.set_reward_pool(ve_yfi_rewards)
     yield ve_yfi_rewards
 
@@ -89,30 +88,35 @@ def gauge_factory(GaugeFactory, Gauge, ExtraReward, gov):
 
 
 @pytest.fixture
-def voter(Voter, gov, ve_yfi, yfi, gauge_factory, ve_yfi_rewards):
-    yield gov.deploy(Voter, ve_yfi, yfi, gauge_factory, ve_yfi_rewards)
+def vote_delegation(VoteDelegation, gov, ve_yfi):
+    yield gov.deploy(VoteDelegation, ve_yfi)
 
 
 @pytest.fixture
-def create_vault(VaultMock, gov):
+def registry(Registry, gov, ve_yfi, yfi, gauge_factory, ve_yfi_rewards):
+    yield gov.deploy(Registry, ve_yfi, yfi, gauge_factory, ve_yfi_rewards)
+
+
+@pytest.fixture
+def create_vault(Token, gov):
     def create_vault():
-        return gov.deploy(VaultMock)
+        return gov.deploy(Token, "Yearn vault")
 
     return create_vault
 
 
 @pytest.fixture
-def create_gauge(voter):
+def create_gauge(registry, gov):
     def create_gauge(vault):
-        return voter.addVaultToRewards(vault)
+        return registry.addVaultToRewards(vault, gov, gov)
 
     yield create_gauge
 
 
 @pytest.fixture
-def create_extra_reward(gauge_factory):
+def create_extra_reward(gauge_factory, gov):
     def create_extra_reward(gauge, token):
-        return gauge_factory.createExtraReward(gauge, token)
+        return gauge_factory.createExtraReward(gauge, token, gov)
 
     yield create_extra_reward
 

@@ -1,60 +1,57 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.11;
+pragma solidity 0.8.13;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 import "./interfaces/IVotingEscrow.sol";
+import "./BaseGauge.sol";
 
-contract VeYfiRewards {
+/** @title VeYfiRewards
+    @notice Gauge like contract that simulate veYFI stake.
+ */
+
+contract VeYfiRewards is BaseGauge {
     using SafeERC20 for IERC20;
 
-    IERC20 public rewardToken; // immutable immutable are breaking coverage software should be added back after.
-    IVotingEscrow public veToken; // immutable
-    uint256 public constant DURATION = 7 days;
-    uint256 public periodFinish = 0;
-    uint256 public rewardRate = 0;
-    uint256 public lastUpdateTime;
-    uint256 public rewardPerTokenStored;
-    uint256 public queuedRewards = 0;
-    uint256 public currentRewards = 0;
-    uint256 public historicalRewards = 0;
-    mapping(address => uint256) public userRewardPerTokenPaid;
-    mapping(address => uint256) public rewards;
+    address public veToken;
+    event UpdatedVeToken(address ve);
 
-    event RewardAdded(uint256 reward);
-    event RewardPaid(address indexed user, uint256 reward);
-
-    constructor(address veToken_, address rewardToken_) {
-        veToken = IVotingEscrow(veToken_);
-        rewardToken = IERC20(rewardToken_);
+    constructor(
+        address _veToken,
+        address _rewardToken,
+        address _owner
+    ) {
+        __initialize(_rewardToken, _owner);
+        require(address(_veToken) != address(0x0), "_veToken 0x0 address");
+        veToken = _veToken;
     }
 
-    function totalSupply() public view returns (uint256) {
-        return veToken.totalSupply();
+    function setVe(address _veToken) external onlyOwner {
+        require(address(_veToken) != address(0x0), "_veToken 0x0 address");
+        veToken = _veToken;
+        emit UpdatedVeToken(_veToken);
     }
 
-    function balanceOf(address account) public view returns (uint256) {
-        return veToken.balanceOf(account);
-    }
-
-    modifier _updateReward(address account) {
-        rewardPerTokenStored = rewardPerToken();
+    function _updateReward(address account) internal override {
+        rewardPerTokenStored = _rewardPerToken();
         lastUpdateTime = lastTimeRewardApplicable();
 
         if (account != address(0)) {
             rewards[account] = _earnedReward(account);
             userRewardPerTokenPaid[account] = rewardPerTokenStored;
+            emit UpdatedRewards(
+                account,
+                rewardPerTokenStored,
+                lastUpdateTime,
+                rewards[account],
+                userRewardPerTokenPaid[account]
+            );
         }
-        _;
     }
 
-    function lastTimeRewardApplicable() public view returns (uint256) {
-        return Math.min(block.timestamp, periodFinish);
-    }
-
-    function rewardPerToken() public view returns (uint256) {
-        uint256 supply = totalSupply();
+    function _rewardPerToken() internal view override returns (uint256) {
+        uint256 supply = IVotingEscrow(veToken).totalSupply();
         if (supply == 0) {
             return rewardPerTokenStored;
         }
@@ -67,19 +64,28 @@ contract VeYfiRewards {
 
     function _earnedReward(address account) internal view returns (uint256) {
         return
-            (balanceOf(account) *
-                (rewardPerToken() - userRewardPerTokenPaid[account])) /
+            (IVotingEscrow(veToken).balanceOf(account) *
+                (_rewardPerToken() - userRewardPerTokenPaid[account])) /
             1e18 +
             rewards[account];
     }
 
-    function earned(address account) external view returns (uint256) {
+    function _newEarning(address account)
+        internal
+        view
+        override
+        returns (uint256)
+    {
         return _earnedReward(account);
     }
 
-    function updateReward(address _account)
+    /** @notice use to update rewards on veYFI balance changes.
+        @dev called by veYFI
+     *  @return true
+     */
+    function rewardCheckpoint(address _account)
         external
-        _updateReward(_account)
+        updateReward(_account)
         returns (bool)
     {
         require(msg.sender == address(veToken), "!authorized");
@@ -87,71 +93,67 @@ contract VeYfiRewards {
         return true;
     }
 
-    function getReward(address _account, bool _lock)
-        public
-        _updateReward(_account)
-        returns (bool)
+    /**
+     * @notice
+     *  Get rewards for an account
+     * @dev rewards are transfer to _account
+     * @param account to claim rewards for
+     * @return true
+     */
+    function getRewardFor(address account) external returns (bool) {
+        _getReward(account, false);
+        return true;
+    }
+
+    /**
+     * @notice
+     *  Get rewards
+     * @param _lock should it lock rewards into veYFI
+     * @return true
+     */
+    function getReward(bool _lock) external returns (bool) {
+        _getReward(msg.sender, _lock);
+        return true;
+    }
+
+    /**
+     * @notice
+     *  Get rewards
+     * @return true
+     */
+    function getReward() external returns (bool) {
+        _getReward(msg.sender, false);
+        return true;
+    }
+
+    function _getReward(address _account, bool _lock)
+        internal
+        updateReward(_account)
     {
         uint256 reward = rewards[_account];
         rewards[_account] = 0;
+        if (reward == 0) {
+            return;
+        }
+
         if (_lock) {
-            SafeERC20.safeApprove(rewardToken, address(veToken), reward);
-            veToken.deposit_for(msg.sender, reward);
+            rewardToken.approve(address(veToken), reward);
+            IVotingEscrow(veToken).deposit_for(msg.sender, reward);
         } else {
             SafeERC20.safeTransfer(rewardToken, _account, reward);
         }
 
         emit RewardPaid(_account, reward);
-        return true;
     }
 
-    function getReward(bool _stake) external returns (bool) {
-        getReward(msg.sender, _stake);
-        return true;
-    }
-
-    function donate(uint256 _amount) external returns (bool) {
-        require(_amount != 0);
-        IERC20(rewardToken).safeTransferFrom(
-            msg.sender,
-            address(this),
-            _amount
-        );
-        queuedRewards = queuedRewards + _amount;
-        return true;
-    }
-
-    function queueNewRewards(uint256 _amount) external returns (bool) {
-        require(_amount != 0, "zero");
-        IERC20(rewardToken).safeTransferFrom(
-            msg.sender,
-            address(this),
-            _amount
-        );
-
-        _amount = _amount + queuedRewards;
-        _notifyRewardAmount(_amount);
-        queuedRewards = 0;
-
-        return true;
-    }
-
-    function _notifyRewardAmount(uint256 reward)
+    function _notProtectedTokens(address _token)
         internal
-        _updateReward(address(0))
+        view
+        override
+        returns (bool)
     {
-        historicalRewards = historicalRewards + reward;
-        if (block.timestamp >= periodFinish) {
-            rewardRate = reward / DURATION;
-        } else {
-            uint256 remaining = periodFinish - block.timestamp;
-            uint256 leftover = remaining * rewardRate;
-            reward = reward + leftover;
-            rewardRate = reward / DURATION;
-        }
-        currentRewards = reward;
-        lastUpdateTime = block.timestamp;
-        periodFinish = block.timestamp + DURATION;
-        emit RewardAdded(reward);
+        return
+            _token != address(rewardToken) ||
+            IVotingEscrow(veToken).migration();
     }
 }

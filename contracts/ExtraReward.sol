@@ -1,109 +1,121 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.11;
+pragma solidity 0.8.13;
 
 import "./interfaces/IGauge.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 import "./interfaces/IExtraReward.sol";
+import "./BaseGauge.sol";
 
-contract ExtraReward is IExtraReward {
+/** @title Extra Rewards for a Gauge
+    @notice An ExtraReward is associated with a gauge and a token.
+    Balances are managed by the associated Gauge. Gauge will
+    @dev this contract is used behind multiple delegate proxies.
+ */
+contract ExtraReward is IExtraReward, BaseGauge {
     using SafeERC20 for IERC20;
-
-    IERC20 public rewardToken;
-    uint256 public constant DURATION = 7 days;
-
-    uint256 public periodFinish = 0;
-    uint256 public rewardRate = 0;
-    uint256 public lastUpdateTime;
-    uint256 public rewardPerTokenStored;
-    uint256 public queuedRewards = 0;
-    uint256 public currentRewards = 0;
-    uint256 public historicalRewards = 0;
-    uint256 public constant NEW_REWARD_RATIO = 830;
-    mapping(address => uint256) public userRewardPerTokenPaid;
-    mapping(address => uint256) public rewards;
-
-    event RewardAdded(uint256 reward);
-    event Deposited(address indexed user, uint256 amount);
-    event Withdrawn(address indexed user, uint256 amount);
-    event RewardPaid(address indexed user, uint256 reward);
-
-    function initialize(address gauge_, address reward_) public {
-        assert(address(gauge) == address(0x0));
-        gauge = IGauge(gauge_);
-        rewardToken = IERC20(reward_);
-    }
-
     IGauge public gauge;
 
-    function totalSupply() public view returns (uint256) {
-        return gauge.totalSupply();
+    event Initialized(
+        address indexed _gauge,
+        address indexed rewardToken,
+        address indexed owner
+    );
+
+    /**
+    @notice Initialize the contract after a clone.
+    @param _gauge the associated Gauge address
+    @param _rewardToken the reward token to be distributed
+    @param _owner owner
+    */
+    function initialize(
+        address _gauge,
+        address _rewardToken,
+        address _owner
+    ) external initializer {
+        __initialize(_rewardToken, _owner);
+        require(address(_gauge) != address(0x0), "_gauge 0x0 address");
+        gauge = IGauge(_gauge);
+        rewardToken = IERC20(_rewardToken);
+        emit Initialized(_gauge, _rewardToken, _owner);
     }
 
-    function balanceOf(address account) public view returns (uint256) {
-        return gauge.balanceOf(account);
-    }
-
-    modifier updateReward(address account) {
-        rewardPerTokenStored = rewardPerToken();
+    function _updateReward(address account) internal override {
+        rewardPerTokenStored = _rewardPerToken();
         lastUpdateTime = lastTimeRewardApplicable();
-
         if (account != address(0)) {
-            rewards[account] = earned(account);
+            uint256 newEarning = _newEarning(account);
+            uint256 maxEarning = _maxEarning(account);
+
+            rewards[account] += newEarning;
+
+            // If rewards aren't boosted at max, loss rewards are queued to be redistributed to the gauge.
+            queuedRewards += (maxEarning - newEarning);
+
             userRewardPerTokenPaid[account] = rewardPerTokenStored;
+            emit UpdatedRewards(
+                account,
+                rewardPerTokenStored,
+                lastUpdateTime,
+                rewards[account],
+                userRewardPerTokenPaid[account]
+            );
         }
-        _;
     }
 
-    function lastTimeRewardApplicable() public view returns (uint256) {
-        return Math.min(block.timestamp, periodFinish);
-    }
-
-    function rewardPerToken() public view returns (uint256) {
-        if (totalSupply() == 0) {
+    function _rewardPerToken() internal view override returns (uint256) {
+        if (gauge.totalSupply() == 0) {
             return rewardPerTokenStored;
         }
         return
             rewardPerTokenStored +
             (((lastTimeRewardApplicable() - lastUpdateTime) *
                 rewardRate *
-                1e18) / totalSupply());
+                1e18) / gauge.totalSupply());
     }
 
-    function earned(address account) public view returns (uint256) {
+    function _newEarning(address account)
+        internal
+        view
+        override
+        returns (uint256)
+    {
         return
-            (balanceOf(account) *
-                (rewardPerToken() - userRewardPerTokenPaid[account])) /
-            1e18 +
-            rewards[account];
+            (gauge.boostedBalanceOf(account) *
+                (_rewardPerToken() - userRewardPerTokenPaid[account])) / 1e18;
     }
 
-    //update reward, emit, call linked reward's stake
-    function deposit(address _account, uint256 amount)
+    function _maxEarning(address account) internal view returns (uint256) {
+        return
+            (gauge.balanceOf(account) *
+                (_rewardPerToken() - userRewardPerTokenPaid[account])) / 1e18;
+    }
+
+    /** @notice update reward for an account
+     *  @dev called by the underlying gauge
+     *  @param _account to update
+     *  @return true
+     */
+    function rewardCheckpoint(address _account)
         external
+        override
         updateReward(_account)
         returns (bool)
     {
         require(msg.sender == address(gauge), "!authorized");
-
-        emit Deposited(_account, amount);
         return true;
     }
 
-    function withdraw(address _account, uint256 amount)
-        external
-        updateReward(_account)
-        returns (bool)
-    {
-        require(msg.sender == address(gauge), "!authorized");
-
-        emit Withdrawn(_account, amount);
-        return true;
-    }
-
-    function getReward(address _account)
+    /**
+     * @notice
+     *  Get rewards
+     * @param _account claim extra rewards
+     * @return true
+     */
+    function getRewardFor(address _account)
         public
+        override
         updateReward(_account)
         returns (bool)
     {
@@ -116,64 +128,8 @@ contract ExtraReward is IExtraReward {
         return true;
     }
 
-    function getReward() external {
-        getReward(msg.sender);
-    }
-
-    function donate(uint256 _amount) external {
-        IERC20(rewardToken).safeTransferFrom(
-            msg.sender,
-            address(this),
-            _amount
-        );
-        queuedRewards = queuedRewards + _amount;
-    }
-
-    function queueNewRewards(uint256 _rewards) external returns (bool) {
-        require(_rewards > 0);
-        IERC20(rewardToken).safeTransferFrom(
-            msg.sender,
-            address(this),
-            _rewards
-        );
-        _rewards = _rewards + queuedRewards;
-
-        if (block.timestamp >= periodFinish) {
-            _notifyRewardAmount(_rewards);
-            queuedRewards = 0;
-            return true;
-        }
-
-        //et = now - (finish-DURATION)
-        uint256 elapsedTime = block.timestamp - (periodFinish - DURATION);
-        //current at now: rewardRate * elapsedTime
-        uint256 currentAtNow = rewardRate * elapsedTime;
-        uint256 queuedRatio = (currentAtNow * 1000) / _rewards;
-        if (queuedRatio < NEW_REWARD_RATIO) {
-            _notifyRewardAmount(_rewards);
-            queuedRewards = 0;
-        } else {
-            queuedRewards = _rewards;
-        }
+    function getReward() external override returns (bool) {
+        getRewardFor(msg.sender);
         return true;
-    }
-
-    function _notifyRewardAmount(uint256 reward)
-        internal
-        updateReward(address(0))
-    {
-        historicalRewards = historicalRewards + reward;
-        if (block.timestamp >= periodFinish) {
-            rewardRate = reward / DURATION;
-        } else {
-            uint256 remaining = periodFinish - block.timestamp;
-            uint256 leftover = remaining * rewardRate;
-            reward = reward + leftover;
-            rewardRate = reward / DURATION;
-        }
-        currentRewards = reward;
-        lastUpdateTime = block.timestamp;
-        periodFinish = block.timestamp + DURATION;
-        emit RewardAdded(reward);
     }
 }

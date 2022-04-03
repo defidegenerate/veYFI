@@ -1,40 +1,71 @@
 // SPDX-License-Identifier: MIT
+pragma solidity 0.8.13;
+
 import "./interfaces/IGauge.sol";
 import "./interfaces/IExtraReward.sol";
+import "./interfaces/IGaugeFactory.sol";
 
-contract GaugeFactory {
-    address deployedGauge; // immutable
-    address deployedExtra;
+/** @title  GaugeFactory
+    @notice Creates Gauge and ExtraReward
+    @dev Uses clone to create new contracts
+ */
+contract GaugeFactory is IGaugeFactory {
+    address public immutable deployedGauge;
+    address public immutable deployedExtra;
 
-    event GaugeCreated(address gauge);
-    event ExtraRewardCreated(address extraReward);
+    event GaugeCreated(address indexed gauge);
+    event ExtraRewardCreated(address indexed extraReward);
 
     constructor(address _deployedGauge, address _deployedExtra) {
         deployedGauge = _deployedGauge;
         deployedExtra = _deployedExtra;
     }
 
+    /** @notice Create a new reward Gauge clone
+        @param _vault the vault address.
+        @param yfi the YFI token address.
+        @param owner owner
+        @param manager manager
+        @param ve veYFI
+        @param veYfiRewardPool veYfi RewardPool
+        @return gauge address
+    */
     function createGauge(
         address _vault,
         address yfi,
+        address owner,
         address manager,
         address ve,
         address veYfiRewardPool
-    ) external returns (address) {
+    ) external override returns (address) {
         address newGauge = _clone(deployedGauge);
-        IGauge(newGauge).initialize(_vault, yfi, manager, ve, veYfiRewardPool);
         emit GaugeCreated(newGauge);
+        IGauge(newGauge).initialize(
+            _vault,
+            yfi,
+            owner,
+            manager,
+            ve,
+            veYfiRewardPool
+        );
 
         return newGauge;
     }
 
-    function createExtraReward(address gauge, address reward)
-        external
-        returns (address result)
-    {
+    /** @notice Create ExtraReward clone
+        @param gauge the gauge associated with.
+        @param reward The token to distribute as a rewards
+        @param owner owner 
+        @return ExtraReward address
+    */
+    function createExtraReward(
+        address gauge,
+        address reward,
+        address owner
+    ) external returns (address) {
         address newExtraReward = _clone(deployedExtra);
-        IExtraReward(newExtraReward).initialize(gauge, reward);
         emit ExtraRewardCreated(newExtraReward);
+        IExtraReward(newExtraReward).initialize(gauge, reward, owner);
 
         return newExtraReward;
     }

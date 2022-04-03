@@ -6,17 +6,16 @@ autofetch_sources: true
 
 # require OpenZepplin Contracts
 dependencies:
-  - OpenZeppelin/openzeppelin-contracts@4.4.2
+  - OpenZeppelin/openzeppelin-contracts@4.5.0
 
 compiler:
   solc:
-    version: 0.8.11
+    version: 0.8.13
     remappings:
-      - "@openzeppelin=OpenZeppelin/openzeppelin-contracts@4.4.2"
+      - "@openzeppelin/contracts=OpenZeppelin/openzeppelin-contracts@4.5.0/contracts"
 
 reports:
   exclude_contracts:
-    - Yfi
-    - VaultMock
     - SafeERC20
     - Address
+    - Token
